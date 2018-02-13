@@ -91,6 +91,15 @@ def files_mkdir(dirname, url, headers):
     r = put(url, data=data, headers=headers)
     assert r.status_code == 201
     return
+
+def files_import(source, destination, headers, new_name=None):
+    '''Import file from remote source to remote destination. New name defaults to current name.'''
+    if new_name is None:
+        new_name = basename(source)
+    data = {'urlToIngest': source, 'fileName': new_name}
+    r = post(destination, headers=headers, data=data)
+    assert r.status_code == 202, 'Command status code is {}, not 202'.format(r.status_code)
+    return
 # end request wrappers
 
 # modification time helper functions
@@ -107,26 +116,31 @@ def get_agavefile_modtime(agavedescription):
     strptime_format = '%Y-%m-%dT%H:%M:%S'
     return datetime.strptime(modstring, strptime_format)
 
-def newer_agavefile(localfile, agave_description):
+def newer_agavefile(localfile, agavedescription):
     '''Given local filepath and Agave file JSON description (only lastModified key required), return TRUE if Agave file is more recently modified.'''
     assert isfile(localfile) or isdir(localfile), 'Local file {} does not exist'.format(localfile)
-    assert 'lastModified' in agave_description, 'lastModified key not in Agave description keys: {}'.format(agave_description.keys())
+    assert 'lastModified' in agavedescription, 'lastModified key not in Agave description keys: {}'.format(agavedescription.keys())
     local_modtime = get_localfile_modtime(localfile)
-    agave_modtime = get_agavefile_modtime(agave_description)
+    agave_modtime = get_agavefile_modtime(agavedescription)
     return (agave_modtime > local_modtime)
+
+def newer_importfile(import_description, dest_description):
+    '''Given import and destination Agave file JSON descriptions (only lastModified key required), return TRUE if import file is more recently modified.'''
+    assert 'lastModified' in import_description, 'lastModified key not in import description keys: {}'.format(import_description.keys())
+    assert 'lastModified' in dest_description, 'lastModified key not in destination description keys: {}'.format(dest_description.keys())
+    import_modtime = get_agavefile_modtime(import_description)
+    dest_modtime = get_agavefile_modtime(dest_description)
+    return(import_modtime > dest_modtime)
 # end modification time helper functions
 
 # recursive files functions
 def recursive_get(url, headers, destination='.', url_type=url, url_base=None, tab=''):
-    '''Performs recursive files-get from remote to local location'''
-    # if agave get listable url
-    if url_type == agave:
-        list_url = agave_path_setlisting(url, url_base)
-    else:
-        list_url = url
-
-    # perform files-list on path
+    '''Performs recursive files-get from remote to local location (ONLY AGAVE CURRENTLY SUPPORTED)'''
+    assert url_type == agave, 'Only agave currently supported for recursive files-get; source was type {}'.format(url_type)
+    # get listable url and file-list
+    list_url = agave_path_setlisting(url, url_base)
     list_json = list_agave_dir_files(list_url, headers)
+
     for i in list_json:
         filename = i['name']
 
@@ -198,19 +212,64 @@ def recursive_upload(url, headers, source='.', url_type=url, url_base=None, tab=
             recursion_url = '{}/{}'.format(url,filename)
             recursive_upload(recursion_url, headers, source=fullpath, url_type=url_type, url_base=url_base, tab=tab+'  ')
     return
+
+def recursive_import(source, destination, headers, stype=url, dtype=url, baseurl=None, tab=''):
+    '''Performs recursive files-import between remote locations (ONLY AGAVE CURRENTLY SUPPORTED).'''
+    assert stype == agave, 'Only agave currently supported for recursive files-get; source was type {}'.format(stype)
+    assert dtype == agave, 'Only agave currently supported for recursive files-get; destination was type {}'.format(dtype)
+
+    # get source list url and dict
+    slisturl = agave_path_setlisting(source, baseurl)
+    sfiles = { i['name']: {'lastModified':i['lastModified'], 'type':i['type'], 'path':i['path']} 
+               for i in list_agave_dir_files(slisturl, headers) }
+
+    # same for destination
+    dlisturl = agave_path_setlisting(destination, baseurl)
+    dfiles = { i['name']: {'lastModified':i['lastModified'], 'type':i['type'], 'path':i['path']}
+               for i in list_agave_dir_files(dlisturl, headers) }
+
+    for fname, finfo in sfiles.items():
+
+        # if dir and '.': mkdir if necessary; otherwise skip
+        if finfo['type'] == 'dir' and fname == '.':
+            directoryname = basename(finfo['path'])
+            if directoryname not in dfiles:
+                print(tab+'mkdir', destination)
+                files_mkdir(directoryname, destination, headers)
+            else:
+                print(tab+'skipping', directoryname, '(exists)')
+            destination += '/{}'.format(directoryname)
+            tab += '  '
+
+        # elif is not '.' but still directory, recurse
+        elif finfo['type'] == 'dir':
+            recursion_source = '{}/{}'.format(source,fname)
+            recursive_import(source, destination, headers, stype=stype, dtype=stype, baseurl=baseurl, tab=tab)
+
+        # must be file; import if not in dest dir (new) or source timestamp is newer (modified), otherwise skip
+        else:
+            if fname not in dfiles:
+                print(tab+'importing', fname, '(new)')
+                files_import(source, destination, headers)
+            elif newer_importfile(finfo, dfiles[fname]):
+                print(tab+'importing', fname, '(modified)')
+                files_import(source, destination, headers)
+            else:
+                print(tab+'skipping', fname, '(exists)')
+    return
 # end recursive files functions
 
 if __name__ == '__main__':
     
     # arguments
     parser = argparse.ArgumentParser(description="Script to combine file-upload, files-get, and files-import. RSYNC FORMATTING NOT YET IMPLEMENTED; CURRENTLY USING FLAGS, NOT POSITIONAL ARGS.")
-    parser.add_argument('-s', '--source', dest='source', required=True, help='source file path (local, agave system, or url)')
-    parser.add_argument('-d', '--destination', dest='dest', default='.', help='destination file path (local or agave system; defaults to $PWD)')
-    parser.add_argument('-f', '--new-name', dest='new_name', help='new file name')
+    parser.add_argument('-s', '--source', dest='source', required=True, help='source file path (local, agave, or url)')
+    parser.add_argument('-d', '--dest', dest='dest', default='.', help='destination file path (local or agave; defaults to $PWD)')
+    parser.add_argument('-f', '--filename', dest='filename', help='new file name')
     parser.add_argument('-r', '--recursive', dest='recursive', action='store_true', help='act on souce path recursively')
     args = parser.parse_args()
 
-    # read cache to get token & baseurl, then build header
+    # read cache to get baseurl & token, then build header
     try:
         cache_json = load(open(expanduser(cache)))
         access_token = cache_json['access_token']
@@ -234,7 +293,7 @@ if __name__ == '__main__':
             print('BEGINNING RECURSIVE GET')
             recursive_get(args.source, h, destination=args.dest, url_type=source_type, url_base=baseurl)
         else:
-            files_download(args.source, h, path=args.dest, name=args.new_name)
+            files_download(args.source, h, path=args.dest, name=args.filename)
     
     # source=local and dest=agave --> upload
     elif source_type == local and dest_type == agave:
@@ -242,15 +301,19 @@ if __name__ == '__main__':
             print('BEGINNING RECURSIVE UPLOAD')
             recursive_upload(args.dest, h, source=args.source, url_type=dest_type, url_base=baseurl)
         else:
-            files_upload(expanduser(args.source), args.dest, h, new_name=args.new_name)
+            files_upload(expanduser(args.source), args.dest, h, new_name=args.filename)
 
     # source=agave/url and dest=agave --> import
     elif source_type != local and dest_type == agave:
-        payload = {'urlToIngest': args.source, 'fileName': args.new_name}
-        cmd = post(args.dest, headers=h, data=payload)
-        assert cmd.status_code == 202, 'Failed files-get, returned code {}'.format(str(cmd.status_code))
-        data = loads(cmd.text)
-        print(dumps(data, indent=2))
+        if source_type == url:
+            print('WARNING: generic urls not yet tested')
+
+        if args.recursive:
+            print('BEGINNING RECURSIVE IMPORT')
+            exit('recursive import not yet implemented')
+        else:
+            files_import(args.source, args.dest, h, new_name=args.filename)
+
 
     # other combos --> error 
     else:
