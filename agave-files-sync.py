@@ -3,7 +3,7 @@
 import argparse
 from os.path import expanduser, isfile, isdir, basename, dirname, getmtime
 from json import load, loads, dumps
-from requests import get, post
+from requests import get, post, put
 from os import makedirs, listdir 
 from datetime import datetime
 
@@ -17,6 +17,7 @@ agave = 'agave'
 url = 'url'
 local = 'local'
 
+# basic helper functions
 def get_path_type(path):
     '''Determines if path is of local, agave, or url types.'''
     path_type=''
@@ -46,7 +47,20 @@ def agave_path_setlisting(path, base, listings=True):
         path = path.replace('{}/files/v2/listings'.format(base), '{}/files/v2/media'.format(base))
     return path
 
+def sametype(local_filepath, agave_description):
+    '''Checks if local and agave files are both directories or files. Returns boolean.'''
+    return (isfile(local_filepath) and agave_description['type'] == 'file') or (isdir(local_filepath) and agave_description['type'] == 'dir')
+# end basic helper functions
+
 # request wrappers
+def list_agave_dir_files(url, headers):
+    '''Performs files-list on remote agave directory and returns list of file JSON descriptions'''
+    r = get(url, headers=headers)
+    assert r.status_code == 200, 'Unable to list files at {}; status code {}'.format(url, r.status_code)
+    l = loads(r.content)
+    assert l.get('result') is not None, 'Unable to read file info from key "result" in JSON \n{}'.format(dumps(l, indent=2))
+    return l['result']
+
 def files_download(url, headers, path='.', name=None):
     '''Downloads and saves file at url. Defaults to saving in the current directory without changing name, but these options are available.'''
     r = get(url, headers=headers)
@@ -66,19 +80,18 @@ def files_upload(localfile, url, headers, new_name=None):
     if new_name is None:
         new_name = basename(localfile)
     # format file data and run command
-    files = {'fileToUpload': (new_name, open(localfile, 'rb'))}
+    files = {'fileToUpload': (new_name, open(expanduser(localfile), 'rb'))}
     r = post(url, headers=headers, files=files)
     assert r.status_code == 202, 'Command status code is {}, not 202'.format(r.status_code)
     return
-# end request wrappers
 
-def list_agave_dir_files(url, headers):
-    '''Performs files-list on remote agave directory and returns list of file JSON descriptions'''
-    r = get(url, headers=headers)
-    assert r.status_code == 200, 'Unable to list files at {}; status code {}'.format(url, r.status_code)
-    l = loads(r.content)
-    assert l.get('result') is not None, 'Unable to read file info from key "result" in JSON \n{}'.format(dumps(l, indent=2))
-    return l['result']
+def files_mkdir(dirname, url, headers):
+    '''Makes a directory at the agave url path.'''
+    data = {'action': 'mkdir', 'path':dirname}
+    r = put(url, data=data, headers=headers)
+    assert r.status_code == 201
+    return
+# end request wrappers
 
 # modification time helper functions
 def get_localfile_modtime(localfile):
@@ -103,56 +116,49 @@ def newer_agavefile(localfile, agave_description):
     return (agave_modtime > local_modtime)
 # end modification time helper functions
 
+# recursive files functions
 def recursive_get(url, headers, destination='.', url_type=url, url_base=None, tab=''):
     '''Performs recursive files-get from remote to local location'''
     # if agave get listable url
     if url_type == agave:
-        url = agave_path_setlisting(url, url_base, listings=True)
+        list_url = agave_path_setlisting(url, url_base)
+    else:
+        list_url = url
 
     # perform files-list on path
-    list_json = list_agave_dir_files(url, headers)
+    list_json = list_agave_dir_files(list_url, headers)
     for i in list_json:
         filename = i['name']
 
-        # is directory
-        if i['type'] == 'dir':
-            # if base ('.'), add name to dest and make local dir if DNE
-            if filename == '.':
-                directoryname = basename(i['path'])
-                destination += '/{}'.format(directoryname)
-                if not isdir(destination):
-                    print(tab+'mkdir', destination)
-                    makedirs(destination)
-                else:
-                    print(tab+'skipping', directoryname, '(exists)')
-                tab += '  '
-
-            # else, add dir to url and recurse
+        # if is directory and '.': mkdir if necessary, otherwise skip
+        if i['type'] == 'dir' and filename == '.':
+            directoryname = basename(i['path'])
+            destination += '/{}'.format(directoryname) # add dirname to local path
+            if not isdir(destination):
+                print(tab+'mkdir', destination)
+                makedirs(destination)
             else:
-                recursion_url = '{}/{}'.format(url,filename)
-                recursive_get(recursion_url, headers, destination=destination, url_type=url_type, tab=tab)
+                print(tab+'skipping', directoryname, '(exists)')
+            tab += '  '
 
-        # is file
+        # elif is not '.' but still directory, recurse
+        elif i['type'] == 'dir':
+            recursion_url = '{}/{}'.format(url,filename)
+            recursive_get(recursion_url, headers, destination=destination, url_type=url_type, url_base=url_base, tab=tab)
+
+        # must be file; download if not in local dir (new) or agave timestamp is newer (modified), otherwise skip
         else:
-            # build file url by adding filename; if agave type, replace 'listings' with 'media' in base path
+            # build file url by adding filename
             file_url = '{}/{}'.format(url, filename)
-            # TODO: fix this...use agave_path_setlisting somehow
-            if url_type == agave:
-                file_url = file_url.replace('listings', 'media', 1)
-
-            # if remote file not at local destination, download
+            filename_fullpath = '{}/{}'.format(destination, filename)
             if filename not in listdir(destination):
                 print(tab+'downloading', filename, '(new)')
                 files_download(file_url, headers, path=destination)
-
-            # elif remote file edited more recently than local file, download
+            elif newer_agavefile(filename_fullpath, i):
+                print(tab+'downloading', filename, '(modified)')
+                files_download(file_url, headers, path=destination)
             else:
-                filename_fullpath = '{}/{}'.format(destination, filename)
-                if newer_agavefile(filename_fullpath, i):
-                    print(tab+'downloading', filename, '(modified)')
-                    files_download(file_url, headers, path=destination)
-                else:
-                    print(tab+'skipping', filename, '(exists)')
+                print(tab+'skipping', filename, '(exists)')
     return
 
 def recursive_upload(url, headers, source='.', url_type=url, url_base=None, tab=''):
@@ -160,40 +166,39 @@ def recursive_upload(url, headers, source='.', url_type=url, url_base=None, tab=
 
     # if agave url, make listable
     if url_type == agave:
-        url = agave_path_setlisting(url, url_base, listings=True)
+        list_url = agave_path_setlisting(url, url_base, listings=True)
+    else:
+        print('WARNING: recursive upload not tested for non-agave remote directories')
 
     # check url EXISTS and is type DIR
-    # make dir of urlfiles info { name:{modified, tyep}}
-    urlfiles = list_agave_dir_files(url, headers)
+    # make dir of urlfiles info { name:{modified, type}}
+    urlfiles = list_agave_dir_files(list_url, headers)
     urlinfo = {i['name']:{'lastModified':i['lastModified'],'type':i['type']} for i in urlfiles}
     assert '.' in urlinfo, 'Url {} is not valid directory'.format(url)
 
     for filename in listdir(expanduser(source)):
         fullpath = '{}/{}'.format(expanduser(source), filename)
-        # if is FIle and present at source, dest
-        # then check modification dates; upload if local is newer
-        if isfile(fullpath) and filename in urlinfo:
-            if newer_agavefile(fullpath, urlinfo[filename]):
+        # if present at dest: skip if dir or agavefile is newer, else upload file
+        if filename in urlinfo and sametype(fullpath, urlinfo[filename]):
+            if isdir(fullpath) or newer_agavefile(fullpath, urlinfo[filename]):
                 print(tab+'skipping', filename, '(exists)')
             else:
                 print(tab+'uploading', filename, '(modified)')
+                files_upload(fullpath, url, headers)
+        # else, not present at dest, so either upload file or make dir
+        elif isfile(fullpath):
+            print(tab+'uploading', filename, '(new)')
+            files_upload(fullpath, url, headers)
+        else:
+            print(tab+'mkdir', filename)
+            files_mkdir(filename, url, headers)
 
-
-
-        # get type (file, dir)
-        # if has name,type match in urlfiles and is FILE: (no need to do anything if is dir)
-            # check modified dates
-            # upload sourcefile if newer
-        # else:
-            # if file:
-                # upload it
-            # else is dir:
-                # make it
-
-        # if dir:
-            # add name to url, source
-            # recurse
+        # if is directory (newly made or old), recurse
+        if isdir(fullpath):
+            recursion_url = '{}/{}'.format(url,filename)
+            recursive_upload(recursion_url, headers, source=fullpath, url_type=url_type, url_base=url_base, tab=tab+'  ')
     return
+# end recursive files functions
 
 if __name__ == '__main__':
     
@@ -233,8 +238,11 @@ if __name__ == '__main__':
     
     # source=local and dest=agave --> upload
     elif source_type == local and dest_type == agave:
-        files_upload(expanduser(args.source), args.dest, h, new_name=args.new_name)
-        print(dumps(data, indent=2))
+        if args.recursive:
+            print('BEGINNING RECURSIVE UPLOAD')
+            recursive_upload(args.dest, h, source=args.source, url_type=dest_type, url_base=baseurl)
+        else:
+            files_upload(expanduser(args.source), args.dest, h, new_name=args.new_name)
 
     # source=agave/url and dest=agave --> import
     elif source_type != local and dest_type == agave:
