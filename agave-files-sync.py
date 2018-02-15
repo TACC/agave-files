@@ -50,6 +50,16 @@ def agave_path_setlisting(path, base, listings=True):
 def sametype(local_filepath, agave_description):
     '''Checks if local and agave files are both directories or files. Returns boolean.'''
     return (isfile(local_filepath) and agave_description['type'] == 'file') or (isdir(local_filepath) and agave_description['type'] == 'dir')
+
+def update_import_destfiles_dict(new_dest, headers, dest_type=url, url_base=None):
+    '''Helper function to update dictionary of destination file information'''
+    # get list url if agave
+    if dest_type == agave:
+        assert url_base is not None, 'Must pass baseurl when using agave url'
+        new_dest = agave_path_setlisting(new_dest, url_base)
+    fdict = { i['name']: {'lastModified':i['lastModified'], 'type':i['type'], 'path':i['path']}
+               for i in list_agave_dir_files(new_dest, headers) }
+    return fdict
 # end basic helper functions
 
 # request wrappers
@@ -88,7 +98,7 @@ def files_upload(localfile, url, headers, new_name=None):
 def files_mkdir(dirname, url, headers):
     '''Makes a directory at the agave url path.'''
     data = {'action': 'mkdir', 'path':dirname}
-    r = put(url, data=data, headers=headers)
+    r = put(url+'/', data=data, headers=headers)
     assert r.status_code == 201
     return
 
@@ -213,47 +223,46 @@ def recursive_upload(url, headers, source='.', url_type=url, url_base=None, tab=
             recursive_upload(recursion_url, headers, source=fullpath, url_type=url_type, url_base=url_base, tab=tab+'  ')
     return
 
-def recursive_import(source, destination, headers, stype=url, dtype=url, baseurl=None, tab=''):
+def recursive_import(source, destination, headers, stype=url, dtype=url, url_base=None, tab=''):
     '''Performs recursive files-import between remote locations (ONLY AGAVE CURRENTLY SUPPORTED).'''
     assert stype == agave, 'Only agave currently supported for recursive files-get; source was type {}'.format(stype)
     assert dtype == agave, 'Only agave currently supported for recursive files-get; destination was type {}'.format(dtype)
 
     # get source list url and dict
-    slisturl = agave_path_setlisting(source, baseurl)
-    sfiles = { i['name']: {'lastModified':i['lastModified'], 'type':i['type'], 'path':i['path']} 
-               for i in list_agave_dir_files(slisturl, headers) }
+    slisturl = agave_path_setlisting(source, url_base)
 
-    # same for destination
-    dlisturl = agave_path_setlisting(destination, baseurl)
-    dfiles = { i['name']: {'lastModified':i['lastModified'], 'type':i['type'], 'path':i['path']}
-               for i in list_agave_dir_files(dlisturl, headers) }
+    # get dict of destination files
+    dfiles = update_import_destfiles_dict(destination, headers, dest_type=dtype, url_base=url_base)
 
-    for fname, finfo in sfiles.items():
+    for finfo in list_agave_dir_files(slisturl, headers):
+        fname = finfo['name']
 
         # if dir and '.': mkdir if necessary; otherwise skip
         if finfo['type'] == 'dir' and fname == '.':
             directoryname = basename(finfo['path'])
             if directoryname not in dfiles:
-                print(tab+'mkdir', destination)
+                print(tab+'mkdir', directoryname)
                 files_mkdir(directoryname, destination, headers)
             else:
                 print(tab+'skipping', directoryname, '(exists)')
             destination += '/{}'.format(directoryname)
+            dfiles = update_import_destfiles_dict(destination, headers, dest_type=dtype, url_base=url_base)
             tab += '  '
 
         # elif is not '.' but still directory, recurse
         elif finfo['type'] == 'dir':
             recursion_source = '{}/{}'.format(source,fname)
-            recursive_import(source, destination, headers, stype=stype, dtype=stype, baseurl=baseurl, tab=tab)
+            recursive_import(recursion_source, destination, headers, stype=stype, dtype=stype, url_base=url_base, tab=tab)
 
         # must be file; import if not in dest dir (new) or source timestamp is newer (modified), otherwise skip
         else:
+            fpath = '{}/{}'.format(source, fname)
             if fname not in dfiles:
                 print(tab+'importing', fname, '(new)')
-                files_import(source, destination, headers)
+                files_import(fpath, destination, headers)
             elif newer_importfile(finfo, dfiles[fname]):
                 print(tab+'importing', fname, '(modified)')
-                files_import(source, destination, headers)
+                files_import(fpath, destination, headers)
             else:
                 print(tab+'skipping', fname, '(exists)')
     return
@@ -310,7 +319,7 @@ if __name__ == '__main__':
 
         if args.recursive:
             print('BEGINNING RECURSIVE IMPORT')
-            exit('recursive import not yet implemented')
+            recursive_import(args.source, args.dest, h, stype=source_type, dtype=dest_type, url_base=baseurl)
         else:
             files_import(args.source, args.dest, h, new_name=args.filename)
 
