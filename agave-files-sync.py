@@ -271,12 +271,16 @@ def recursive_import(source, destination, headers, stype=url, dtype=url, url_bas
 if __name__ == '__main__':
     
     # arguments
-    parser = argparse.ArgumentParser(description="Script to combine file-upload, files-get, and files-import. RSYNC FORMATTING NOT YET IMPLEMENTED; CURRENTLY USING FLAGS, NOT POSITIONAL ARGS.")
-    parser.add_argument('-s', '--source', dest='source', required=True, help='source file path (local, agave, or url)')
-    parser.add_argument('-d', '--dest', dest='dest', default='.', help='destination file path (local or agave; defaults to $PWD)')
-    parser.add_argument('-f', '--filename', dest='filename', help='new file name')
-    parser.add_argument('-r', '--recursive', dest='recursive', action='store_true', help='act on souce path recursively')
+    parser = argparse.ArgumentParser(description="Script to combine file-upload, files-get, and files-import.")
+    parser.add_argument('-n', '--name', dest='name', help='new file name')
+    parser.add_argument('-r', '--recursive', dest='recursive', action='store_true', help='sync recursively')
+    parser.add_argument('source', help='source path (local, agave, or url)')
+    parser.add_argument('destination', default='.', nargs='?', help='destination path (local or agave; default $PWD)')
     args = parser.parse_args()
+
+    # if recursive run, ignore name flag
+    if args.recursive and args.name is not None:
+        print('Ignoring name flag due to recursion.')
 
     # read cache to get baseurl & token, then build header
     try:
@@ -287,30 +291,42 @@ if __name__ == '__main__':
         exit('Error reading access token and baseurl from cache {}'.format(cache))
     h = { 'Authorization': 'Bearer {}'.format(access_token) }
 
+    # check for trailing slash on source, then strip slashes
+    # if recursing: trailing slash means no nesting
+    # if no recursion: ERROR because unsure what to do
+    source_slash = (args.source[-1] == '/')
+    if source_slash and not args.recursive:
+        exit('Please provide either a path to a file or specify a recursive response.')
+    else:
+        args.source = (args.source[:-1] if args.source[-1] == '/' else args.source)
+    args.destination = (args.destination[:-1] if args.destination[-1] == '/' else args.destination)
+
     # determine source and destination path types
     # reformat agave urls with baseurl
     source_type = get_path_type(args.source)
     if source_type == agave:
         args.source = agave_path_builder(baseurl, args.source, recursive=args.recursive)
-    dest_type = get_path_type(args.dest)
+    dest_type = get_path_type(args.destination)
     if dest_type == agave:
-        args.dest = agave_path_builder(baseurl, args.dest)
+        args.destination = agave_path_builder(baseurl, args.destination)
 
     # source=agave/url and dest=local --> get
     if source_type != local and dest_type == local:
         if args.recursive:
-            print('BEGINNING RECURSIVE GET')
-            recursive_get(args.source, h, destination=args.dest, url_type=source_type, url_base=baseurl)
+            print('Beginnning recursive download...')
+            recursive_get(args.source, h, destination=args.destination, url_type=source_type, url_base=baseurl)
         else:
-            files_download(args.source, h, path=args.dest, name=args.filename)
+            print('Downloading', basename(args.source), 'to', args.destination)
+            files_download(args.source, h, path=args.destination, name=args.name)
     
     # source=local and dest=agave --> upload
     elif source_type == local and dest_type == agave:
         if args.recursive:
-            print('BEGINNING RECURSIVE UPLOAD')
-            recursive_upload(args.dest, h, source=args.source, url_type=dest_type, url_base=baseurl)
+            print('Beginning recursive upload...')
+            recursive_upload(args.destination, h, source=args.source, url_type=dest_type, url_base=baseurl)
         else:
-            files_upload(expanduser(args.source), args.dest, h, new_name=args.filename)
+            print('Uploading', basename(args.source), 'to', args.destination)
+            files_upload(expanduser(args.source), args.destination, h, new_name=args.name)
 
     # source=agave/url and dest=agave --> import
     elif source_type != local and dest_type == agave:
@@ -318,12 +334,13 @@ if __name__ == '__main__':
             print('WARNING: generic urls not yet tested')
 
         if args.recursive:
-            print('BEGINNING RECURSIVE IMPORT')
-            recursive_import(args.source, args.dest, h, stype=source_type, dtype=dest_type, url_base=baseurl)
+            print('Beginning recursive import...')
+            recursive_import(args.source, args.destination, h, stype=source_type, dtype=dest_type, url_base=baseurl)
         else:
-            files_import(args.source, args.dest, h, new_name=args.filename)
+            print('Importing', basename(args.source), 'to', args.destination)
+            files_import(args.source, args.destination, h, new_name=args.name)
 
 
     # other combos --> error 
     else:
-        exit('Cannot have source type {} and destination type {}'.format(source_type, dest_type))
+        exit('Cannot have source type', source_type, 'and destination type', dest_type)
