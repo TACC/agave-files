@@ -271,7 +271,7 @@ def recursive_import(source, destination, headers, stype=url, dtype=url, url_bas
 if __name__ == '__main__':
     
     # arguments
-    parser = argparse.ArgumentParser(description="Script to combine file-upload, files-get, and files-import.")
+    parser = argparse.ArgumentParser(description='Script to combine file-upload, files-get, and files-import. When recursion (-r) specified, a trailing slash on source path syncs contents of source and destination; no trailing slash nests source under destination.')
     parser.add_argument('-n', '--name', dest='name', help='new file name')
     parser.add_argument('-r', '--recursive', dest='recursive', action='store_true', help='sync recursively')
     parser.add_argument('source', help='source path (local, agave, or url)')
@@ -287,13 +287,18 @@ if __name__ == '__main__':
         cache_json = load(open(expanduser(cache)))
         access_token = cache_json['access_token']
         baseurl = cache_json['baseurl']
+        expire = datetime.fromtimestamp(int(cache_json['created_at'])+int(cache_json['expires_in']))
     except:
-        exit('Error reading access token and baseurl from cache {}'.format(cache))
+        exit('Error reading from cache {}'.format(cache))
     h = { 'Authorization': 'Bearer {}'.format(access_token) }
+
+    # if access token is expired, quit
+    if expire < datetime.now():
+        exit('Access token is expired. Please pull valid token and try again.')
 
     # check for trailing slash on source, then strip slashes
     # if recursing: trailing slash means no nesting
-    # if no recursion: ERROR because unsure what to do
+    # else: ERROR because unsure what to do
     source_slash = (args.source[-1] == '/')
     if source_slash and not args.recursive:
         exit('Please provide either a path to a file or specify a recursive response.')
@@ -301,12 +306,13 @@ if __name__ == '__main__':
         args.source = (args.source[:-1] if args.source[-1] == '/' else args.source)
     args.destination = (args.destination[:-1] if args.destination[-1] == '/' else args.destination)
 
-    # determine source and destination path types
-    # reformat agave urls with baseurl
+    # determine path types
     source_type = get_path_type(args.source)
+    dest_type = get_path_type(args.destination)
+
+    # reformat agave urls
     if source_type == agave:
         args.source = agave_path_builder(baseurl, args.source, recursive=args.recursive)
-    dest_type = get_path_type(args.destination)
     if dest_type == agave:
         args.destination = agave_path_builder(baseurl, args.destination)
 
@@ -339,7 +345,6 @@ if __name__ == '__main__':
         else:
             print('Importing', basename(args.source), 'to', args.destination)
             files_import(args.source, args.destination, h, new_name=args.name)
-
 
     # other combos --> error 
     else:
