@@ -42,10 +42,11 @@ def credentials():
         credentials['verify_certs'] = tempcred.get('verify', None)
         credentials['client_name'] = tempcred.get('client_name', None)
         credentials['tenantid'] = tempcred.get('tenantid', None)
+
     # test file
     credentials_file = environ.get('creds', 'test_credentials.json')
-    print(("Loading file: {}".format(credentials_file)))
     if exists(credentials_file):
+        print(("Loading file: {}".format(credentials_file)))
         credentials = load(open(
             join(HERE, credentials_file), 'r'))
     # environment
