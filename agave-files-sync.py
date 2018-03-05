@@ -1,21 +1,76 @@
 #!/usr/bin/env python
 
 import argparse
-from os.path import expanduser, isfile, isdir, basename, dirname, getmtime
+import agavepy.agave as a
+
+from os import makedirs, listdir, environ
+from os.path import abspath, exists, expanduser, isfile, isdir, join, basename, dirname, getmtime
 from json import load, loads, dumps
 from requests import get, post, put
-from os import makedirs, listdir 
 from datetime import datetime
 
 # global variables
+HERE = dirname(abspath(__file__))
 cache = '~/.agave/current'
-agave_prefix='agave://'
-url_prefix='http'
+agave_prefix = 'agave://'
+url_prefix = 'http'
 
 # file types; set here to avoid repeated string use
 agave = 'agave'
 url = 'url'
 local = 'local'
+
+
+def credentials():
+    '''
+    Load credentials for testing session
+
+    Order: user credential store, test file, env
+    '''
+    credentials = {}
+    # credential store
+    ag_cred_store = expanduser('~/.agave/current')
+    if exists(ag_cred_store):
+        tempcred = load(open(ag_cred_store, 'r'))
+        credentials['apiserver'] = tempcred.get('baseurl', None)
+        credentials['username'] = tempcred.get('username', None)
+        credentials['password'] = tempcred.get('password', None)
+        credentials['apikey'] = tempcred.get('apikey', None)
+        credentials['apisecret'] = tempcred.get('apisecret', None)
+        credentials['token'] = tempcred.get('access_token', None)
+        credentials['refresh_token'] = tempcred.get('refresh_token', None)
+        credentials['verify_certs'] = tempcred.get('verify', None)
+        credentials['client_name'] = tempcred.get('client_name', None)
+        credentials['tenantid'] = tempcred.get('tenantid', None)
+    # test file
+    credentials_file = environ.get('creds', 'test_credentials.json')
+    print(("Loading file: {}".format(credentials_file)))
+    if exists(credentials_file):
+        credentials = load(open(
+            join(HERE, credentials_file), 'r'))
+    # environment
+    for env in ('apikey', 'apisecret', 'username', 'password',
+                'apiserver', 'verify_certs', 'refresh_token',
+                'token', 'client_name'):
+        varname = '_AGAVE_' + env.upper()
+        if environ.get(varname, None) is not None:
+            credentials[env] = environ.get(varname)
+            print("Loaded {} from env".format(env))
+
+    return credentials
+
+
+def agave(credentials):
+    '''Returns an authenticated Agave client'''
+    aga = a.Agave(username=credentials.get('username'),
+                  password=credentials.get('password'),
+                  api_server=credentials.get('apiserver'),
+                  api_key=credentials.get('apikey'),
+                  api_secret=credentials.get('apisecret'),
+                  token=credentials.get('token'),
+                  refresh_token=credentials.get('refresh_token'),
+                  verify=credentials.get('verify_certs', True))
+    return aga
 
 # basic helper functions
 def get_path_type(path):
@@ -305,19 +360,16 @@ if __name__ == '__main__':
     if args.recursive and args.name is not None:
         print('Ignoring name flag due to recursion.')
 
-    # read cache to get baseurl & token, then build header
+    # Adapt the code we use in CI testing to bootstrap credentials
+    ag = agave(credentials())
     try:
-        cache_json = load(open(expanduser(cache)))
-        access_token = cache_json['access_token']
-        baseurl = cache_json['baseurl']
-        expire = datetime.fromtimestamp(int(cache_json['created_at'])+int(cache_json['expires_in']))
-    except:
-        exit('Error reading from cache {}'.format(cache))
-    h = { 'Authorization': 'Bearer {}'.format(access_token) }
+        access_token = ag.token.token_info['access_token']
+        baseurl = ag.token.api_server
+    except Exception as e:
+        exit('Error initializing api client: {}'.format(e))
 
-    # if access token is expired, quit
-    if expire < datetime.now():
-        exit('Access token is expired. Please pull valid token and try again.')
+    # we will eventually need to replace the direct calls to requests with agavepy
+    h = { 'Authorization': 'Bearer {}'.format(access_token) }
 
     # check for trailing slash on source, then strip slashes
     # if recursing: trailing slash means no nesting
