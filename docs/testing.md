@@ -9,7 +9,6 @@ testing with a service account. To set TravisCI testing up in a fork, with
 your own credentials, you need to create the following variables:
 
 ```shell
-travis encrypt _AGAVE_APISERVER=api_url --add
 travis encrypt _AGAVE_USERNAME=user_name --add
 travis encrypt _AGAVE_PASSWORD=password --add
 travis encrypt _AGAVE_APIKEY=consumer_key --add
