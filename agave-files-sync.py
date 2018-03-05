@@ -83,6 +83,15 @@ def files_download(url, headers, path='.', name=None):
         f.write(r.content)
     return
 
+# touch a local, empty-length file instead of downloading it
+def files_touch(url, path='.', name=None):
+    if name is None:
+        name = basename(url)
+    path += '/' + name
+    with open(expanduser(path), 'wb') as f:
+        f.write("")
+    return
+
 def files_upload(localfile, url, headers, new_name=None):
     '''Uploads file at localfile path to url. Name at location can be specified with new_name; defaults to current name.'''
     assert isfile(localfile), 'Local file {} does not exists or is directory'.format(localfile)
@@ -117,6 +126,13 @@ def get_localfile_modtime(localfile):
     '''Given path to file, returns datetime of last modification on that file.'''
     assert isfile(localfile) or isdir(localfile), 'Local file {} does not exist'.format(localfile)
     return datetime.fromtimestamp(getmtime(localfile))
+
+def get_agavefile_size(agavedescription):
+    '''Given Agave file JSON file description, returns size in bytes'''
+    assert 'length' in agavedescription, 'size key not in Agave description keys: {}'.format(agavedescription.keys())
+    # strip '.000-0X:00' off modtime (unknown meaning)
+    filesize = agavedescription['length']
+    return filesize
 
 def get_agavefile_modtime(agavedescription):
     '''Given Agave file JSON file description (only lastModified key required), returns datetime of last modification on that file.'''
@@ -175,12 +191,19 @@ def recursive_get(url, headers, destination='.', url_type=url, url_base=None, ta
             # build file url by adding filename
             file_url = '{}/{}'.format(url, filename)
             filename_fullpath = '{}/{}'.format(destination, filename)
+            file_size = get_agavefile_size(i)
             if filename not in listdir(destination):
                 print(tab+'downloading', filename, '(new)')
-                files_download(file_url, headers, path=destination)
+                if file_size > 0:
+                    files_download(file_url, headers, path=destination)
+                else:
+                    files_touch(file_url, destination)
             elif newer_agavefile(filename_fullpath, i):
                 print(tab+'downloading', filename, '(modified)')
-                files_download(file_url, headers, path=destination)
+                if file_size > 0:
+                    files_download(file_url, headers, path=destination)
+                else:
+                    files_touch(file_url, destination)
             else:
                 print(tab+'skipping', filename, '(exists)')
     return
