@@ -2,6 +2,8 @@
 
 import argparse
 import agavepy.agave as a
+import logging
+import time
 
 from os import makedirs, listdir, environ
 from os.path import abspath, exists, expanduser, isfile, isdir, join, basename, dirname, getmtime
@@ -10,7 +12,11 @@ from requests import get, post, put
 from datetime import datetime
 
 # global variables
+global logger
+global HERE
+
 HERE = dirname(abspath(__file__))
+
 cache = '~/.agave/current'
 agave_prefix = 'agave://'
 url_prefix = 'http'
@@ -19,6 +25,28 @@ url_prefix = 'http'
 agave = 'agave'
 url = 'url'
 local = 'local'
+
+
+def get_logger(name):
+    """
+    Returns a properly configured logger.
+         name (str) should be the module name.
+    """
+    FORMAT = "%(asctime)s [%(levelname)s]: %(message)s"
+    DATEFORMAT = "%Y-%m-%dT%H:%M:%SZ"
+    logging.Formatter.converter = time.gmtime
+
+    logger = logging.getLogger(name)
+    level = environ.get('LOGLEVEL', 'INFO')
+    logger.setLevel(level)
+
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter(FORMAT, datefmt=DATEFORMAT))
+    logger.addHandler(handler)
+    logger.debug(
+        "Returning a logger set to level: {} for module: {}".format(
+            level, name))
+    return logger
 
 
 def credentials():
@@ -31,6 +59,7 @@ def credentials():
     # credential store
     ag_cred_store = expanduser('~/.agave/current')
     if exists(ag_cred_store):
+        logger.debug('Reading ~/.agave/current')
         tempcred = load(open(ag_cred_store, 'r'))
         credentials['apiserver'] = tempcred.get('baseurl', None)
         credentials['username'] = tempcred.get('username', None)
@@ -46,7 +75,8 @@ def credentials():
     # test file
     credentials_file = environ.get('creds', 'test_credentials.json')
     if exists(credentials_file):
-        print(("Loading file: {}".format(credentials_file)))
+        logger.debug(("Reading credentials file: {}".format(
+            credentials_file)))
         credentials = load(open(
             join(HERE, credentials_file), 'r'))
     # environment
@@ -56,7 +86,7 @@ def credentials():
         varname = '_AGAVE_' + env.upper()
         if environ.get(varname, None) is not None:
             credentials[env] = environ.get(varname)
-            print("Loaded {} from env".format(env))
+            logger.debug("Loaded {} from environment".format(env))
 
     return credentials
 
@@ -231,10 +261,10 @@ def recursive_get(url, headers, destination='.', url_type=url, url_base=None, ta
             directoryname = basename(i['path'])
             destination += '/{}'.format(directoryname) # add dirname to local path
             if not isdir(destination):
-                print(tab+'mkdir', destination)
+                logger.debug(tab+'mkdir', destination)
                 makedirs(destination)
             else:
-                print(tab+'skipping', directoryname, '(exists)')
+                logger.debug(tab+'skipping', directoryname, '(exists)')
             tab += '  '
 
         # elif is not '.' but still directory, recurse
@@ -249,19 +279,19 @@ def recursive_get(url, headers, destination='.', url_type=url, url_base=None, ta
             filename_fullpath = '{}/{}'.format(destination, filename)
             file_size = get_agavefile_size(i)
             if filename not in listdir(destination):
-                print(tab+'downloading', filename, '(new)')
+                logger.debug(tab+'downloading', filename, '(new)')
                 if file_size > 0:
                     files_download(file_url, headers, path=destination)
                 else:
                     files_touch(file_url, destination)
             elif newer_agavefile(filename_fullpath, i):
-                print(tab+'downloading', filename, '(modified)')
+                logger.debug(tab+'downloading', filename, '(modified)')
                 if file_size > 0:
                     files_download(file_url, headers, path=destination)
                 else:
                     files_touch(file_url, destination)
             else:
-                print(tab+'skipping', filename, '(exists)')
+                logger.debug(tab+'skipping', filename, '(exists)')
     return
 
 def recursive_upload(url, headers, source='.', url_type=url, url_base=None, tab=''):
@@ -271,7 +301,7 @@ def recursive_upload(url, headers, source='.', url_type=url, url_base=None, tab=
     if url_type == agave:
         list_url = agave_path_setlisting(url, url_base, listings=True)
     else:
-        print('WARNING: recursive upload not tested for non-agave remote directories')
+        logger.warning('WARNING: recursive upload not tested for non-agave remote directories')
 
     # check url EXISTS and is type DIR
     # make dir of urlfiles info { name:{modified, type}}
@@ -284,16 +314,16 @@ def recursive_upload(url, headers, source='.', url_type=url, url_base=None, tab=
         # if present at dest: skip if dir or agavefile is newer, else upload file
         if filename in urlinfo and sametype(fullpath, urlinfo[filename]):
             if isdir(fullpath) or newer_agavefile(fullpath, urlinfo[filename]):
-                print(tab+'skipping', filename, '(exists)')
+                logger.debug(tab+'skipping', filename, '(exists)')
             else:
-                print(tab+'uploading', filename, '(modified)')
+                logger.debug(tab+'uploading', filename, '(modified)')
                 files_upload(fullpath, url, headers)
         # else, not present at dest, so either upload file or make dir
         elif isfile(fullpath):
-            print(tab+'uploading', filename, '(new)')
+            logger.debug(tab+'uploading', filename, '(new)')
             files_upload(fullpath, url, headers)
         else:
-            print(tab+'mkdir', filename)
+            logger.debug(tab+'mkdir', filename)
             files_mkdir(filename, url, headers)
 
         # if is directory (newly made or old), recurse
@@ -320,10 +350,10 @@ def recursive_import(source, destination, headers, stype=url, dtype=url, url_bas
         if finfo['type'] == 'dir' and fname == '.':
             directoryname = basename(finfo['path'])
             if directoryname not in dfiles:
-                print(tab+'mkdir', directoryname)
+                logger.debug(tab+'mkdir', directoryname)
                 files_mkdir(directoryname, destination, headers)
             else:
-                print(tab+'skipping', directoryname, '(exists)')
+                logger.debug(tab+'skipping', directoryname, '(exists)')
             destination += '/{}'.format(directoryname)
             dfiles = update_import_destfiles_dict(destination, headers, dest_type=dtype, url_base=url_base)
             tab += '  '
@@ -337,18 +367,20 @@ def recursive_import(source, destination, headers, stype=url, dtype=url, url_bas
         else:
             fpath = '{}/{}'.format(source, fname)
             if fname not in dfiles:
-                print(tab+'importing', fname, '(new)')
+                logger.debug(tab+'importing', fname, '(new)')
                 files_import(fpath, destination, headers)
             elif newer_importfile(finfo, dfiles[fname]):
-                print(tab+'importing', fname, '(modified)')
+                logger.debug(tab+'importing', fname, '(modified)')
                 files_import(fpath, destination, headers)
             else:
-                print(tab+'skipping', fname, '(exists)')
+                logger.debug(tab+'skipping', fname, '(exists)')
     return
 # end recursive files functions
 
 if __name__ == '__main__':
-    
+
+    logger = get_logger('agave-files-sync')
+
     # arguments
     parser = argparse.ArgumentParser(description='Script to combine file-upload, files-get, and files-import. When recursion (-r) specified, a trailing slash on source path syncs contents of source and destination; no trailing slash nests source under destination.')
     parser.add_argument('-n', '--name', dest='name', help='new file name')
@@ -359,7 +391,7 @@ if __name__ == '__main__':
 
     # if recursive run, ignore name flag
     if args.recursive and args.name is not None:
-        print('Ignoring name flag due to recursion.')
+        logger.warning('Ignoring name flag due to recursion.')
 
     # Adapt the code we use in CI testing to bootstrap credentials
     ag = agave(credentials())
@@ -395,31 +427,31 @@ if __name__ == '__main__':
     # source=agave/url and dest=local --> get
     if source_type != local and dest_type == local:
         if args.recursive:
-            print('Beginnning recursive download...')
+            logger.debug('Beginnning recursive download...')
             recursive_get(args.source, h, destination=args.destination, url_type=source_type, url_base=baseurl)
         else:
-            print('Downloading', basename(args.source), 'to', args.destination)
+            #logger.debug('Downloading', basename(args.source), 'to', args.destination)
             files_download(args.source, h, path=args.destination, name=args.name)
     
     # source=local and dest=agave --> upload
     elif source_type == local and dest_type == agave:
         if args.recursive:
-            print('Beginning recursive upload...')
+            logger.debug('Beginning recursive upload...')
             recursive_upload(args.destination, h, source=args.source, url_type=dest_type, url_base=baseurl)
         else:
-            print('Uploading', basename(args.source), 'to', args.destination)
+            logger.debug('Uploading', basename(args.source), 'to', args.destination)
             files_upload(expanduser(args.source), args.destination, h, new_name=args.name)
 
     # source=agave/url and dest=agave --> import
     elif source_type != local and dest_type == agave:
         if source_type == url:
-            print('WARNING: generic urls not yet tested')
+            logger.warning('WARNING: generic urls not yet tested')
 
         if args.recursive:
-            print('Beginning recursive import...')
+            logger.debug('Beginning recursive import...')
             recursive_import(args.source, args.destination, h, stype=source_type, dtype=dest_type, url_base=baseurl)
         else:
-            print('Importing', basename(args.source), 'to', args.destination)
+            logger.debug('Importing', basename(args.source), 'to', args.destination)
             files_import(args.source, args.destination, h, new_name=args.name)
 
     # other combos --> error 
