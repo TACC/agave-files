@@ -261,10 +261,10 @@ def recursive_get(url, headers, destination='.', url_type=url, url_base=None, ta
             directoryname = basename(i['path'])
             destination += '/{}'.format(directoryname) # add dirname to local path
             if not isdir(destination):
-                logger.debug(tab+'mkdir', destination)
+                logger.debug('mkdir {}'.format(destination))
                 makedirs(destination)
             else:
-                logger.debug(tab+'skipping', directoryname, '(exists)')
+                logger.debug('skipping {} ({})'.format(directoryname, 'exists'))
             tab += '  '
 
         # elif is not '.' but still directory, recurse
@@ -279,19 +279,19 @@ def recursive_get(url, headers, destination='.', url_type=url, url_base=None, ta
             filename_fullpath = '{}/{}'.format(destination, filename)
             file_size = get_agavefile_size(i)
             if filename not in listdir(destination):
-                logger.debug(tab+'downloading', filename, '(new)')
+                logger.debug('downloading {} ({})'.format(filename, 'new'))
                 if file_size > 0:
                     files_download(file_url, headers, path=destination)
                 else:
                     files_touch(file_url, destination)
             elif newer_agavefile(filename_fullpath, i):
-                logger.debug(tab+'downloading', filename, '(modified)')
+                logger.debug('downloading {} ({})'.format(filename, 'modified'))
                 if file_size > 0:
                     files_download(file_url, headers, path=destination)
                 else:
                     files_touch(file_url, destination)
             else:
-                logger.debug(tab+'skipping', filename, '(exists)')
+                logger.debug('skipping {} ({})'.format(filename, 'exists'))
     return
 
 def recursive_upload(url, headers, source='.', url_type=url, url_base=None, tab=''):
@@ -314,16 +314,16 @@ def recursive_upload(url, headers, source='.', url_type=url, url_base=None, tab=
         # if present at dest: skip if dir or agavefile is newer, else upload file
         if filename in urlinfo and sametype(fullpath, urlinfo[filename]):
             if isdir(fullpath) or newer_agavefile(fullpath, urlinfo[filename]):
-                logger.debug(tab+'skipping', filename, '(exists)')
+                logger.debug('skipping {} ({})'.format(filename, 'exists'))
             else:
-                logger.debug(tab+'uploading', filename, '(modified)')
+                logger.debug('uploading {} ({})'.format(filename, 'modified'))
                 files_upload(fullpath, url, headers)
         # else, not present at dest, so either upload file or make dir
         elif isfile(fullpath):
-            logger.debug(tab+'uploading', filename, '(new)')
+            logger.debug('uploading {} ({})'.format(filename, 'new'))
             files_upload(fullpath, url, headers)
         else:
-            logger.debug(tab+'mkdir', filename)
+            logger.debug('mkdir {}'.format(filename))
             files_mkdir(filename, url, headers)
 
         # if is directory (newly made or old), recurse
@@ -350,10 +350,10 @@ def recursive_import(source, destination, headers, stype=url, dtype=url, url_bas
         if finfo['type'] == 'dir' and fname == '.':
             directoryname = basename(finfo['path'])
             if directoryname not in dfiles:
-                logger.debug(tab+'mkdir', directoryname)
+                logger.debug('mkdir {}'.format(directoryname))
                 files_mkdir(directoryname, destination, headers)
             else:
-                logger.debug(tab+'skipping', directoryname, '(exists)')
+                logger.debug('skipping {} ({})'.format(directoryname, 'exists'))
             destination += '/{}'.format(directoryname)
             dfiles = update_import_destfiles_dict(destination, headers, dest_type=dtype, url_base=url_base)
             tab += '  '
@@ -367,13 +367,13 @@ def recursive_import(source, destination, headers, stype=url, dtype=url, url_bas
         else:
             fpath = '{}/{}'.format(source, fname)
             if fname not in dfiles:
-                logger.debug(tab+'importing', fname, '(new)')
+                logger.debug('importing {} ({})'.format(fname, 'new'))
                 files_import(fpath, destination, headers)
             elif newer_importfile(finfo, dfiles[fname]):
-                logger.debug(tab+'importing', fname, '(modified)')
+                logger.debug('importing {} ({})'.format(fname, 'modified'))
                 files_import(fpath, destination, headers)
             else:
-                logger.debug(tab+'skipping', fname, '(exists)')
+                logger.debug('skipping {} ({})'.format(fname, 'exists'))
     return
 # end recursive files functions
 
