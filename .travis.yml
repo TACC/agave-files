@@ -1,3 +1,7 @@
+env:
+  global:
+    - _AGAVE_APISERVER="https://api.sd2e.org"
+    - _AGAVE_USERNAME="sd2etest"
 language: python
 python:
 - '2.7'
